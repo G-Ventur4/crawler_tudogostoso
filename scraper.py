@@ -1,85 +1,67 @@
+import os
+import csv
 import requests
 from bs4 import BeautifulSoup
-from stem import Signal
-from stem.control import Controller
-
-# Função para obter uma lista de proxies a partir de um arquivo de texto
-def get_proxies_from_file(file_path):
-    with open(file_path, 'r') as file:
-        proxies = file.read().splitlines()
-    return proxies
-
-# Função para enviar uma solicitação HTTP através de um proxy
-def send_request_with_proxy(url, proxy):
-    proxies = {
-        'http': proxy,
-        'https': proxy
-    }
-    try:
-        response = requests.get(url, proxies=proxies)
-        return response
-    except requests.exceptions.RequestException as e:
-        print(f"Error sending request: {e}")
-        return None
-
-# Função para obter uma nova identidade para o Tor
-def renew_tor_identity():
-    with Controller.from_port(port=9051) as controller:
-        controller.authenticate()
-        controller.signal(Signal.NEWNYM)
+from proxychains import proxyconfig
 
 # URL do site com as receitas
-url = 'https://www.tudogostoso.com.br'
+base_url = 'https://www.tudogostoso.com.br'
 
-# Caminho para o arquivo de proxies
-proxies_file_path = 'proxies.txt'
+# Arquivo de saída para armazenar as receitas
+output_file = 'recipes.csv'
 
-# Obtém a lista de proxies a partir do arquivo
-proxies = get_proxies_from_file(proxies_file_path)
+# Caminho para o arquivo contendo os proxies
+proxies_file = 'proxies.txt'
 
-# Loop para acessar as páginas com cada proxy
-for proxy in proxies:
-    # Renova a identidade do Tor para cada proxy
-    renew_tor_identity()
-    
-    # Envia a solicitação HTTP usando o proxy atual
-    response = send_request_with_proxy(url, proxy)
-    
-    if response and response.status_code == 200:
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Extrai as informações das receitas
-        # (coloque aqui o código para extrair as informações que deseja)
-        
-        # Exemplo: imprimir o título das receitas
-        recipes = soup.select('.recipe-title')
-        for recipe in recipes:
-            print(recipe.text)
-    else:
-        print(f"Request failed using proxy: {proxy}")
+# Configura o uso do proxychains
+proxyconfig.set_config(proxies_file)
 
+# Cria uma sessão HTTP com suporte a proxychains
+session = requests.session()
+session.proxies = proxyconfig.getproxies()
 
-# This is a template for a Python scraper on morph.io (https://morph.io)
-# including some code snippets below that you should find helpful
+# Função para extrair as receitas do site
+def scrape_recipes():
+    # Lista para armazenar as receitas
+    recipes = []
 
-# import scraperwiki
-# import lxml.html
-#
-# # Read in a page
-# html = scraperwiki.scrape("http://foo.com")
-#
-# # Find something on the page using css selectors
-# root = lxml.html.fromstring(html)
-# root.cssselect("div[align='left']")
-#
-# # Write out to the sqlite database using scraperwiki library
-# scraperwiki.sqlite.save(unique_keys=['name'], data={"name": "susan", "occupation": "software developer"})
-#
-# # An arbitrary query against the database
-# scraperwiki.sql.select("* from data where 'name'='peter'")
+    # Realiza a requisição à página inicial
+    response = session.get(base_url)
 
-# You don't have to do things with the ScraperWiki and lxml libraries.
-# You can use whatever libraries you want: https://morph.io/documentation/python
-# All that matters is that your final data is written to an SQLite database
-# called "data.sqlite" in the current working directory which has at least a table
-# called "data".
+    # Extrai os links das receitas da página inicial
+    soup = BeautifulSoup(response.content, 'html.parser')
+    recipe_links = soup.select('.card a.recipe-card')
+
+    # Percorre os links das receitas
+    for link in recipe_links:
+        recipe_url = base_url + link['href']
+
+        # Realiza a requisição à página da receita
+        recipe_response = session.get(recipe_url)
+
+        # Extrai os detalhes da receita
+        recipe_soup = BeautifulSoup(recipe_response.content, 'html.parser')
+        title = recipe_soup.select_one('.recipe-title').text.strip()
+        ingredients = [ingredient.text.strip() for ingredient in recipe_soup.select('.p-ingredient')]
+        instructions = [instruction.text.strip() for instruction in recipe_soup.select('.instructions p')]
+
+        # Adiciona a receita à lista
+        recipes.append({'Title': title, 'Ingredients': ingredients, 'Instructions': instructions})
+
+    return recipes
+
+# Executa o crawler e salva as receitas em um arquivo CSV
+if __name__ == '__main__':
+    recipes = scrape_recipes()
+
+    # Verifica se o diretório de saída existe
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
+    # Salva as receitas em um arquivo CSV
+    with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+        fieldnames = ['Title', 'Ingredients', 'Instructions']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(recipes)
+
+    print('Crawler concluído. As receitas foram salvas em', output_file)
